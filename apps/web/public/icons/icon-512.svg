@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Cornerstone app icon large</title>
+  <desc id="desc">A neutral geometric C mark on a dark rounded square.</desc>
+  <rect width="512" height="512" rx="112" fill="#111111" />
+  <path
+    d="M347 154a32 32 0 1 0 0-64H213C145.6 90 91 144.6 91 212v88c0 67.4 54.6 122 122 122h134a32 32 0 1 0 0-64H213c-32.8 0-58-25.2-58-58v-88c0-32.8 25.2-58 58-58h134Z"
+    fill="#ffffff"
+  />
+</svg>

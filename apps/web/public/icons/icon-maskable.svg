@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Cornerstone maskable app icon</title>
+  <desc id="desc">A safe-area friendly maskable icon variant with generous padding.</desc>
+  <rect width="512" height="512" fill="#111111" />
+  <circle cx="256" cy="256" r="172" fill="#1f1f1f" />
+  <path
+    d="M337 183a28 28 0 1 0 0-56H224c-58.5 0-106 47.5-106 106v46c0 58.5 47.5 106 106 106h113a28 28 0 1 0 0-56H224c-27.7 0-50-22.3-50-50v-46c0-27.7 22.3-50 50-50h113Z"
+    fill="#ffffff"
+  />
+</svg>

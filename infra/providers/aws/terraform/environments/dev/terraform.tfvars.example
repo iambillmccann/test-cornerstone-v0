@@ -1,0 +1,34 @@
+# Copy this file to terraform.tfvars and fill in your actual values
+# terraform.tfvars is .gitignore'd — never commit actual secrets
+
+aws_region = "us-east-1"
+environment_name = "dev"
+project_name = "cornerstone"
+database_name = "cornerstone"
+tf_lock_table_name = "cornerstone-tf-lock"
+
+# Clerk
+clerk_jwks_url          = "https://your-instance.clerk.accounts.com/.well-known/jwks.json"
+# Optional for compatibility, but recommended for strict JWT validation:
+clerk_issuer            = "https://your-instance.clerk.accounts.com"
+clerk_audience          = "your-clerk-audience"
+clerk_publishable_key   = "pk_test_..."
+
+# These ARNs are output by bootstrap-state.sh; paste them here
+clerk_secret_key_arn    = "arn:aws:secretsmanager:us-east-1:123456789:secret:<app-slug>-clerk-secret-key-XXXXX"
+rds_database_url_arn    = "arn:aws:secretsmanager:us-east-1:123456789:secret:<app-slug>-database-url-XXXXX"
+
+# RDS Configuration
+rds_instance_class      = "db.t4g.micro"
+rds_storage_gb          = 20
+rds_public_accessibility = false
+
+# CORS
+cors_origins = "https://d12345abcde.cloudfront.net"
+
+# Docker
+ecr_image_tag = "latest"
+
+# App Runner
+app_runner_cpu    = 256
+app_runner_memory = 512

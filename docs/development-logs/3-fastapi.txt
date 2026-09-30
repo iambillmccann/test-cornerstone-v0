@@ -1,0 +1,175 @@
+This document contains references to Cornerstone
+
+FastAPI Backend Development Log
+Date: 2026-05-07
+Repo: fourier-gauss-labs/cornerstone
+Branch: main
+
+Goal
+Create the initial FastAPI backend in apps/api so the service exists and can be called locally.
+
+Requirements (Part 1)
+- Create Python project in apps/api
+- Add FastAPI
+- Add /health
+- Add /ready
+- Add /version
+- Add CORS for local frontend
+- Add structured error shape
+
+Requirements (Part 2 - Enhancement)
+- Add versioned API router structure (/api/v1)
+- Add pytest-based endpoint tests
+- Add environment-based settings
+
+Part 1: Core Backend Implementation
+==================================
+
+Step 1 - Repository discovery and conventions
+Status: Complete
+Actions:
+- Reviewed repository memory and coding standards.
+- Confirmed monorepo layout: apps/api (backend), apps/web (frontend)
+- Reviewed prior development log formatting to match existing documentation style.
+- Confirmed Python standards: type hints, Pydantic schemas, explicit route handlers
+
+Step 2 - Create Python project scaffold
+Status: Complete
+Actions:
+- Created apps/api/pyproject.toml with FastAPI and Uvicorn dependencies
+- Created apps/api/README.md with local run instructions
+- Created package structure: app/__init__.py, app/config.py, app/schemas.py, app/main.py
+
+Step 3 - Implement FastAPI app and required routes
+Status: Complete
+Actions:
+- Added FastAPI application in app/main.py
+- Added typed response schemas in app/schemas.py
+- Implemented endpoints: /health, /ready, /version
+
+Step 4 - Add local frontend CORS support
+Status: Complete
+Actions:
+- Added CORSMiddleware with local frontend origins (5173, 4173, 4174, 3000)
+- Enabled credentials, all methods, all headers
+
+Step 5 - Add structured error response shape
+Status: Complete
+Actions:
+- Added centralized error_response helper for consistent payloads
+- Added exception handlers for HTTP, validation, and unhandled exceptions
+- Standardized error shape: {"error": {"code": "...", "message": "...", "details": []}}
+
+Step 6 - Local install and runtime validation
+Status: Complete
+Actions:
+- Created virtual environment, installed app in editable mode
+- Started Uvicorn, tested endpoints via curl
+- Verified error shapes and CORS responses
+- Workspace diagnostics: no errors found
+
+Part 2: Enhancement - Versioned Router, Tests, and Environment Config
+======================================================================
+
+Step 7 - Add versioned API router structure
+Status: Complete
+Actions:
+- Created apps/api/app/routes.py with APIRouter prefix="/api/v1"
+- Moved health, ready, version endpoints into v1 router
+- Updated apps/api/app/main.py to include_router(v1_router)
+- Updated apps/api/README.md to reflect new endpoint paths
+- New endpoints:
+  - GET /api/v1/health
+  - GET /api/v1/ready
+  - GET /api/v1/version
+
+Step 7 Summary
+- API now uses semantic versioning in the URL path, allowing future /api/v2 routes
+- Endpoints are organized and easy to extend
+
+Step 8 - Add pytest test suite
+Status: Complete
+Actions:
+- Updated pyproject.toml with pytest dev dependencies
+  - pytest>=7.4.0,<8.0.0
+  - pytest-cov>=4.1.0,<5.0.0
+  - httpx>=0.24.0,<1.0.0
+- Added pytest configuration to pyproject.toml
+  - testpaths: ["tests"]
+  - python_files: "test_*.py"
+  - addopts: "-v --tb=short"
+- Created tests/test_endpoints.py with 12 comprehensive tests:
+  - TestHealthEndpoint (2 tests): response value and schema validation
+  - TestReadyEndpoint (2 tests): response value and schema validation
+  - TestVersionEndpoint (2 tests): response value and schema validation
+  - TestErrorShapes (3 tests): 404, validation, and error field validation
+  - TestCORSConfiguration (3 tests): CORS origins for 5173, 4173, 3000
+- Installed dev dependencies and ran full test suite
+- Result: All 12 tests pass with zero warnings
+
+Step 8 Summary
+- Test coverage for core endpoints, error shapes, and CORS
+- Easy to extend with additional feature tests
+- Testing infrastructure ready for ongoing development
+
+Step 9 - Add environment-based settings
+Status: Complete
+Actions:
+- Updated apps/api/app/config.py to use Pydantic ConfigDict (Pydantic v2)
+  - Removed deprecated class-based Config
+  - Added env_file and env_file_encoding to model_config
+- Moved CORS_ORIGINS from hardcoded constant to configurable list
+- Settings class now reads from .env file
+- Support for environment variable overrides:
+  - CORS_ORIGINS (comma-separated list of allowed origins)
+- Created apps/api/.env.example with:
+  - APP_NAME=cornerstone-api
+  - APP_VERSION=0.1.0
+  - CORS_ORIGINS=http://localhost:5173,...
+- Updated apps/api/app/main.py to use settings.cors_origins
+- Updated README.md with configuration section
+
+Step 9 Summary
+- Settings are now externalized and configurable per environment
+- .env.example provides clear documentation for required values
+- No Pydantic deprecation warnings
+
+Step 10 - Verification and validation
+Status: Complete
+Actions:
+- Ran complete pytest suite: 12 tests, all passed
+- Module import check: app.main loads successfully with all 3 versioned routes
+- Verified no editor errors in apps/api
+- Confirmed app metadata and route registration:
+  - Title: cornerstone-api
+  - Version: 0.1.0
+  - Routes: /api/v1/health, /api/v1/ready, /api/v1/version
+
+Step 11 - VS Code test discovery alignment
+Status: Complete
+Actions:
+- Investigated Python extension discovery failure in VS Code Testing panel
+- Confirmed interpreter selection uses apps/api/.venv/bin/python
+- Fixed pytest discovery scope mismatch in .vscode/settings.json
+  - Set python.testing.cwd to ${workspaceFolder}/apps/api
+  - Set python.testing.pytestArgs to ["tests"]
+  - Set python.defaultInterpreterPath to ${workspaceFolder}/apps/api/.venv/bin/python
+- Re-ran discovery from Testing panel and confirmed tests are visible/runnable
+
+Step 11 Summary
+- VS Code Testing now matches terminal behavior
+- Discovery no longer fails with "file or directory not found: apps/api/tests"
+
+Files Changed
+- apps/api/pyproject.toml (updated with test dependencies and config)
+- apps/api/app/config.py (environment-based settings, Pydantic v2)
+- apps/api/app/main.py (versioned router integration, removed legacy routes)
+- apps/api/app/routes.py (new: v1 router with health, ready, version)
+- apps/api/.env.example (new: configuration template)
+- apps/api/tests/ (new: test_endpoints.py with 12 tests, __init__.py)
+- apps/api/README.md (updated with v1 paths, test instructions, config section)
+- .vscode/settings.json (updated test discovery cwd, pytest args, interpreter)
+- docs/development-logs/3-fastapi.txt (this file)
+
+Project Summary
+Cornerstone now has a production-ready FastAPI backend scaffold with versioned API routes, comprehensive test coverage, and environment-based configuration. The service is callable at /api/v1/* with health, readiness, and version endpoints. Error responses are structured and CORS is configured for local frontend development. The test suite validates endpoint responses, error shapes, and CORS functionality. All code follows the repo's Python standards: type hints, Pydantic schemas, and explicit business logic separation.

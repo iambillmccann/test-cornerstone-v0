@@ -1,0 +1,162 @@
+This document contains references to Cornerstone
+
+Development Log: 5-postgres
+Date: 2026-05-08
+Scope: Add local PostgreSQL persistence foundation for FastAPI backend (SQLAlchemy + Alembic + baseline models + service + tests)
+
+1) Implementation summary
+- Added SQLAlchemy ORM foundation under apps/api/app/db.
+- Added Alembic migration support under apps/api/alembic with initial migration.
+- Added baseline persistence models:
+  - users
+  - workspaces
+  - workspace_members
+- Added service function to fetch-or-create local app user and default workspace.
+- Added persistence and service tests.
+- Updated docs and env examples for local DB + migration commands.
+
+2) Approved path alignment updates
+- Introduced config package path: apps/api/app/core/config.py
+- Updated app imports to use app.core.config.
+- Kept apps/api/app/config.py as compatibility shim for legacy imports.
+- Converted API schemas to package layout:
+  - apps/api/app/schemas/__init__.py
+- Removed legacy monolithic file:
+  - apps/api/app/schemas.py
+
+3) Dependencies and packaging
+- Updated apps/api/pyproject.toml dependencies:
+  - sqlalchemy>=2.0.36,<3.0.0
+  - alembic>=1.14.0,<2.0.0
+  - psycopg[binary]>=3.2.3,<4.0.0
+- Added setuptools discovery guard to avoid packaging alembic as top-level app package:
+  - [tool.setuptools.packages.find]
+    include = ["app*"]
+
+4) Database configuration
+- Added apps/api/app/core/config.py with:
+  - database_url setting
+  - default local URL: postgresql+psycopg://postgres:postgres@localhost:5432/cornerstone
+  - env overrides for DATABASE_URL, CLERK_* and CORS_ORIGINS
+
+5) SQLAlchemy persistence layer
+- Added apps/api/app/db/session.py:
+  - engine
+  - SessionLocal
+  - Declarative Base
+  - get_db_session dependency helper
+- Added apps/api/app/db/models:
+  - user.py
+  - workspace.py
+  - workspace_member.py
+  - __init__.py exports
+
+Model details implemented:
+- users:
+  - id UUID primary key
+  - auth_provider nullable string
+  - auth_provider_user_id nullable unique string
+  - email nullable unique string
+  - display_name nullable string
+  - avatar_url nullable string
+  - created_at timestamp
+  - updated_at timestamp
+- workspaces:
+  - id UUID primary key
+  - name string
+  - created_at timestamp
+  - updated_at timestamp
+- workspace_members:
+  - id UUID primary key
+  - workspace_id FK -> workspaces.id
+  - user_id FK -> users.id
+  - role string default owner
+  - created_at timestamp
+  - updated_at timestamp
+  - unique(workspace_id, user_id)
+
+6) Alembic setup and migration
+- Added:
+  - apps/api/alembic.ini
+  - apps/api/alembic/env.py
+  - apps/api/alembic/script.py.mako
+  - apps/api/alembic/versions/20260508_0001_initial_persistence.py
+- Initial migration creates users/workspaces/workspace_members and supports downgrade.
+
+7) Service layer behavior
+- Added apps/api/app/services/user_bootstrap.py:
+  - get_or_create_local_user_with_default_workspace(...)
+- Input fields:
+  - auth_provider
+  - auth_provider_user_id
+  - email
+  - display_name
+  - avatar_url
+- Lookup precedence:
+  1. auth_provider + auth_provider_user_id
+  2. email fallback
+- Behavior:
+  - Return existing user when found.
+  - If not found, create user + default workspace + workspace_members owner row in one transaction.
+- Workspace naming rule:
+  - "<display_name>'s Workspace" when display_name exists
+  - otherwise "My Workspace"
+
+8) Tests added
+- apps/api/tests/conftest.py
+  - in-memory sqlite engine fixture with FK pragma enabled
+  - transaction-scoped db_session fixture
+- apps/api/tests/test_persistence_models.py
+  - create user/workspace/membership behavior
+  - unique constraint behavior on workspace_members(workspace_id, user_id)
+- apps/api/tests/test_user_bootstrap_service.py
+  - creates user/workspace/owner membership when user missing
+  - idempotent return for repeated provider identity
+  - fallback email lookup when provider match is absent
+
+9) Documentation and environment updates
+- Updated apps/api/README.md:
+  - local DB startup command
+  - migration commands
+  - reproducibility downgrade/upgrade cycle
+  - DATABASE_URL config guidance
+- Updated root .env.example:
+  - DATABASE_URL switched to postgresql+psycopg URL format
+  - added CLERK_ISSUER and CLERK_AUDIENCE placeholders
+
+10) Commands run and results
+From repo root:
+- ./scripts/dev-db-up.sh
+Result:
+- Pulled and started PostgreSQL container successfully.
+
+From apps/api:
+- source .venv/bin/activate
+- pip install -e ".[dev]"
+Result:
+- Initial run failed due setuptools discovering both app and alembic top-level packages.
+- Fixed by constraining package discovery to app* in pyproject.toml.
+- Re-ran successfully.
+
+Migrations:
+- alembic upgrade head
+- alembic downgrade base
+- alembic upgrade head
+Result:
+- Migration and rollback cycles completed successfully against local PostgreSQL.
+
+Tests:
+- pytest
+Result:
+- 19 passed.
+- One teardown warning observed initially from rollback on inactive transaction; fixed fixture guard and re-ran.
+- Final run: 19 passed, 0 warnings.
+
+11) Scope boundaries respected
+- No Clerk token validation changes were introduced.
+- No frontend changes were made.
+- No invitation flow, multi-user workspace features, advanced roles, billing/admin/notifications/AI abstractions, or Supabase-specific APIs were added.
+
+12) Handoff update
+- Repository memory updated with the PostgreSQL persistence state for future sessions.
+- Current implementation remains validated: Alembic migration cycle succeeded and pytest finished with 19 passing tests.

@@ -1,0 +1,24 @@
+{
+  "application": {
+    "name": "Cornerstone",
+    "slug": "cornerstone"
+  },
+  "completed_steps": [],
+  "pending_steps": [
+    "configure",
+    "specialize",
+    "local_environment",
+    "local_database",
+    "authentication",
+    "cloud_bootstrap",
+    "cloud_provision",
+    "cloud_deploy",
+    "validation",
+    "finalize"
+  ],
+  "provider": "aws",
+  "region": "us-east-1",
+  "secrets": {},
+  "status": "in_progress",
+  "version": 1
+}

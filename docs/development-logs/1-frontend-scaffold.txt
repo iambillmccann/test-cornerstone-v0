@@ -1,0 +1,175 @@
+This document contains references to Cornerstone
+
+Frontend Scaffold Development Log
+Date: 2026-05-05
+Repo: fourier-gauss-labs/cornerstone
+Branch: main
+
+Execution Rules
+- Pause after each implementation step for user review.
+- Resolve all errors and warnings within each step before proceeding.
+
+Step 1 - Baseline validation and cleanup prep
+Status: Complete
+Actions:
+- Created development log directory and file.
+- Ran baseline checks in apps/web:
+	- npm install
+	- npm run lint
+	- npm run build
+- Observed warnings:
+	- Multiple npm EBADENGINE warnings due to Node v20.14.0 being below required minimum (20.19.0) for installed Vite/ESLint toolchain.
+	- Vite build printed Node runtime warning requiring 20.19+.
+- Resolved warnings by upgrading runtime with nvm:
+	- nvm install 20.19.0
+	- nvm use 20.19.0
+- Re-ran validation checks:
+	- npm install
+	- npm run lint
+	- npm run build
+	- Result: clean install/lint/build with no warnings.
+- Confirmed Vite dev server startup:
+	- npm run dev -- --host 0.0.0.0 --port 4173
+	- Verified Vite ready and serving at http://localhost:4173/
+	- Stopped dev server after confirmation.
+
+Step 1 Summary
+- Baseline frontend scaffold is stable and Vite runs successfully.
+- Environment warning source identified and fixed (Node runtime version).
+
+Step 2 - Template cleanup prep
+Status: Complete
+Actions:
+- Audited candidate template artifacts and references.
+- Removed template favicon link and updated document title:
+	- Edited apps/web/index.html
+	- Removed: <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+	- Updated: <title>Cornerstone</title>
+- Removed unused template assets:
+	- Deleted apps/web/public/icons.svg
+	- Deleted apps/web/public/favicon.svg
+	- Deleted apps/web/src/assets/hero.png
+- Validation after cleanup:
+	- npm run lint
+	- npm run build
+	- Result: clean lint/build with no errors or warnings.
+
+Step 2 Summary
+- Frontend template artifacts were cleaned without affecting app stability.
+- Project shell HTML is now neutral (no template favicon reference, correct title).
+
+Step 3 - Tailwind foundation setup
+Status: Complete
+Actions:
+- Installed Tailwind tooling:
+	- npm install -D tailwindcss postcss autoprefixer
+	- npx tailwindcss init -p
+- Configured Tailwind content paths:
+	- Edited apps/web/tailwind.config.js
+	- Set content to ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"]
+- Wired Tailwind directives into global CSS:
+	- Edited apps/web/src/index.css
+	- Added @tailwind base; @tailwind components; @tailwind utilities;
+- Initial validation detected a build error:
+	- Error: Tailwind can no longer be used directly as PostCSS plugin in this version.
+	- Build failed with recommendation to use @tailwindcss/postcss.
+- Resolved build error:
+	- npm install -D @tailwindcss/postcss
+	- Edited apps/web/postcss.config.js
+	- Replaced plugin key from tailwindcss to "@tailwindcss/postcss"
+- Re-ran validation:
+	- npm run lint
+	- npm run build
+	- Result: clean lint/build with no errors or warnings.
+- Confirmed dev startup after Tailwind integration:
+	- npm run dev -- --host 0.0.0.0 --port 4173
+	- Verified Vite ready and serving at http://localhost:4173/
+	- Stopped dev server after confirmation.
+
+Step 3 Summary
+- Tailwind foundation is in place and fully functional in Vite.
+- Tailwind/PostCSS version compatibility issue was identified and fixed within step.
+
+Step 4 - shadcn/ui setup
+Status: Complete
+Actions:
+- Added shadcn prerequisites for alias resolution:
+	- Edited apps/web/tsconfig.app.json (added @/* path mapping)
+	- Edited apps/web/vite.config.ts (added alias @ -> ./src)
+- Initialized shadcn/ui for Vite:
+	- npx shadcn@latest init -t vite -b radix -y --css-variables --no-monorepo
+	- Generated apps/web/components.json
+	- Updated apps/web/src/index.css
+	- Generated button and utils files
+- Corrected generator output path issue:
+	- shadcn wrote files under apps/web/@/... instead of src
+	- Moved to:
+		- apps/web/src/components/ui/button.tsx
+		- apps/web/src/lib/utils.ts
+	- Removed accidental apps/web/@ directory
+- Addressed lint error from generated button export:
+	- react-refresh/only-export-components error on exported buttonVariants
+	- Edited button.tsx to export only Button
+- Addressed TypeScript deprecation build error:
+	- TS5101 on compilerOptions.baseUrl
+	- Removed baseUrl from apps/web/tsconfig.app.json and apps/web/tsconfig.json while retaining paths alias
+- Addressed build warnings from generated font import:
+	- Removed unresolved @fontsource-variable/geist import from apps/web/src/index.css
+	- Set --font-sans to fallback stack: ui-sans-serif, system-ui, sans-serif
+- Validation after fixes:
+	- npm run lint
+	- npm run build
+	- npm run dev -- --host 0.0.0.0 --port 4173
+	- Result: clean lint/build and successful startup with no remaining errors/warnings.
+
+Step 4 Summary
+- shadcn/ui is installed and configured for this Vite + Tailwind v4 project.
+- Alias/config and generated artifacts are aligned to project structure and compile cleanly.
+
+Step 5 - Layout scaffold implementation
+Status: Complete
+Actions:
+- Created shell layout components:
+	- apps/web/src/components/layout/Header.tsx (top bar with "Cornerstone" branding)
+	- apps/web/src/components/layout/Navigation.tsx (left navigation rail with placeholder links)
+	- apps/web/src/components/layout/Layout.tsx (root shell: header + sidebar + main content)
+- Created home page component:
+	- apps/web/src/components/pages/Home.tsx (empty home with placeholder text)
+- Wired layout into app:
+	- Edited apps/web/src/App.tsx to render Layout with Home component
+- Addressed lint errors during implementation:
+	- Removed empty interface declarations from Header and Navigation (TS rule)
+	- Updated Navigation shrink class from flex-shrink-0 to shrink-0 (Tailwind shorthand)
+- Validation after implementation:
+	- npm run lint
+	- npm run build
+	- npm run dev -- --host 0.0.0.0 --port 4173
+	- Result: clean lint/build and successful dev server startup.
+
+Step 5 Summary
+- App shell layout is complete with top bar, left navigation rail, and main content area.
+- Home page is structurally sound and intentionally minimal (user will handle UX/design separately).
+- All validation passes with zero errors or warnings.
+
+Step 6 - Final verification and handoff
+Status: Complete
+Actions:
+- Ran final comprehensive validation:
+	- npm run lint (zero errors/warnings)
+	- npm run build (zero errors/warnings, production bundle successful)
+	- npm run dev (clean startup, app ready at http://localhost:4174/)
+	- Workspace problems scan (zero errors)
+- Confirmed all requirements met:
+	- ✓ Vite runs successfully
+	- ✓ Clean template files (no scaffold artifacts)
+	- ✓ Tailwind CSS integrated and functional
+	- ✓ shadcn/ui installed with proper aliasing
+	- ✓ Basic layout created (top bar, left nav, main content)
+	- ✓ Empty home page ready for UX/design work
+
+Step 6 Summary
+- Frontend scaffold is stable, lint-clean, builds successfully, and runs without errors.
+- All validation checks pass at development, build, and runtime stages.
+
+Project Summary
+Frontend scaffold is production-ready in structure and configuration. The app is clean, maintainable, and ready for external UI/UX design and feature development. All tooling (Vite, Tailwind, shadcn, TypeScript, ESLint) is configured and working correctly. Minimal styling applied intentionally to preserve design flexibility for downstream work.

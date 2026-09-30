@@ -1,0 +1,81 @@
+This document contains references to Cornerstone
+
+Development Log: 4-backend-auth
+Date: 2026-05-08
+Scope: FastAPI backend auth verification with Clerk token trust and frontend token forwarding
+
+1) Reviewed current backend/frontend/auth docs and repo memory
+- Confirmed existing FastAPI app structure and error response shape.
+- Confirmed Clerk frontend auth is already wired with @clerk/clerk-react.
+- Confirmed goal: verify Clerk bearer token in FastAPI and return trusted identity.
+
+2) Added backend JWT verification dependency
+- Added dependency in apps/api/pyproject.toml:
+  - PyJWT[crypto]>=2.9.0,<3.0.0
+- Added new module apps/api/app/auth.py:
+  - HTTP bearer token extraction.
+  - JWKS fetch from CLERK_JWKS_URL with in-process cache.
+  - Token signature verification using RS256 and JWKS key by kid.
+  - Optional issuer/audience checks via CLERK_ISSUER and CLERK_AUDIENCE.
+  - Structured HTTP errors for missing/invalid tokens and missing config.
+
+3) Added backend configuration support
+- Updated apps/api/app/config.py:
+  - clerk_jwks_url
+  - clerk_issuer
+  - clerk_audience
+- Added env override reads:
+  - CLERK_JWKS_URL
+  - CLERK_ISSUER
+  - CLERK_AUDIENCE
+
+4) Added protected endpoint for current auth identity
+- Updated apps/api/app/schemas.py:
+  - Added AuthIdentityResponse schema.
+- Updated apps/api/app/routes.py:
+  - Added GET /api/v1/auth/me
+  - Endpoint requires verified token and returns identity claims:
+    - sub, sid, iss, azp, email
+
+5) Added backend tests
+- Updated apps/api/tests/test_endpoints.py:
+  - test_auth_me_requires_bearer_token (expects 401 + structured error)
+  - test_auth_me_returns_identity_from_verified_token (dependency override)
+
+6) Wired frontend to send Clerk session token
+- Updated apps/web/src/components/pages/Home.tsx:
+  - Uses useAuth().getToken() to fetch Clerk session token.
+  - Calls GET /api/v1/auth/me with Authorization: Bearer <token>.
+  - Uses VITE_API_BASE_URL fallback to http://localhost:8000.
+  - Displays loading, error, and returned identity values.
+
+7) Updated docs and examples
+- Updated apps/api/.env.example:
+  - Added CLERK_JWKS_URL, CLERK_ISSUER, CLERK_AUDIENCE.
+- Updated apps/api/README.md:
+  - Added /api/v1/auth/me endpoint and auth config notes.
+- Updated docs/setup/authentication.md:
+  - Added backend apps/api/.env guidance for verification vars.
+  - Added VITE_API_BASE_URL in frontend env example.
+
+8) Validation
+- Backend tests run from apps/api:
+  - /home/iambillmccann/repositories/cornerstone/.venv/bin/python -m pip install -e ".[dev]"
+  - /home/iambillmccann/repositories/cornerstone/.venv/bin/python -m pytest
+  - Result: 14 passed
+- Frontend build run from apps/web:
+  - npm install
+  - npm run build
+  - Result: build succeeded
+  - Note: Node engine warnings reported because local Node was 20.14.0 while project tooling recommends >=20.19.0.
+
+Outcome
+- FastAPI now validates Clerk bearer tokens via JWKS.
+- Protected endpoint returns current trusted auth identity.
+- Frontend now sends Clerk session token to backend and renders verification result.
+- No app user model was introduced.
+
+9) Handoff update (same day)
+- Re-checked current route file after subsequent edits: `apps/api/app/routes.py` still contains `GET /api/v1/auth/me` with Clerk identity dependency.
+- Updated repository memory notes for next session handoff in `/memories/repo/cornerstone.md` under "Backend Auth State (May 8, 2026)".
+- This log now reflects both implementation and handoff-ready verification status.

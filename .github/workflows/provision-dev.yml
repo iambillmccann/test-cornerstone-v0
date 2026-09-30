@@ -1,0 +1,248 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: provision-dev
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: AWS deployment region
+        required: true
+        default: us-east-2
+        type: string
+      tf_state_bucket:
+        description: Terraform state bucket name
+        required: true
+        type: string
+      tf_state_key:
+        description: Terraform state object key
+        required: true
+        default: dev/terraform.tfstate
+        type: string
+      environment_name:
+        description: Terraform environment name
+        required: true
+        default: dev
+        type: string
+      app_slug:
+        description: Application slug used for resource naming
+        required: true
+        default: cornerstone
+        type: string
+      database_name:
+        description: Database name
+        required: true
+        default: cornerstone
+        type: string
+      tf_lock_table_name:
+        description: Terraform state lock DynamoDB table
+        required: true
+        default: cornerstone-tf-lock
+        type: string
+      clerk_jwks_url:
+        description: Clerk JWKS URL
+        required: true
+        type: string
+      clerk_issuer:
+        description: Optional Clerk issuer
+        required: false
+        default: ""
+        type: string
+      clerk_audience:
+        description: Optional Clerk audience
+        required: false
+        default: ""
+        type: string
+      clerk_publishable_key:
+        description: Clerk publishable key
+        required: true
+        type: string
+      clerk_secret_key_arn:
+        description: Secrets Manager ARN for the Clerk secret key
+        required: true
+        type: string
+      rds_database_url_arn:
+        description: Secrets Manager ARN for the database URL
+        required: true
+        type: string
+      cors_origins:
+        description: Optional CORS origins CSV
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TF_IN_AUTOMATION: "true"
+  APP_SLUG: ${{ inputs.app_slug }}
+  AWS_REGION: ${{ inputs.aws_region }}
+  TF_STATE_BUCKET: ${{ inputs.tf_state_bucket }}
+  TF_STATE_KEY: ${{ inputs.tf_state_key }}
+  TF_LOCK_TABLE_NAME: ${{ inputs.tf_lock_table_name }}
+  DATABASE_NAME: ${{ inputs.database_name }}
+  ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+  CLERK_JWKS_URL: ${{ inputs.clerk_jwks_url }}
+  CLERK_ISSUER: ${{ inputs.clerk_issuer }}
+  CLERK_AUDIENCE: ${{ inputs.clerk_audience }}
+  CLERK_PUBLISHABLE_KEY: ${{ inputs.clerk_publishable_key }}
+  CLERK_SECRET_KEY_ARN: ${{ inputs.clerk_secret_key_arn }}
+  RDS_DATABASE_URL_ARN: ${{ inputs.rds_database_url_arn }}
+  CORS_ORIGINS: ${{ inputs.cors_origins }}
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate workflow inputs
+        run: |
+          missing=0
+
+          for name in AWS_REGION TF_STATE_BUCKET TF_STATE_KEY TF_LOCK_TABLE_NAME APP_SLUG DATABASE_NAME ENVIRONMENT_NAME CLERK_JWKS_URL CLERK_PUBLISHABLE_KEY CLERK_SECRET_KEY_ARN RDS_DATABASE_URL_ARN; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required workflow input: $name" >&2
+              missing=1
+            fi
+          done
+
+          if [[ -z "${{ secrets.AWS_ROLE_ARN }}" ]]; then
+            echo "Missing required repository secret: AWS_ROLE_ARN" >&2
+            missing=1
+          fi
+
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Write terraform.auto.tfvars
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: |
+          cat > terraform.auto.tfvars <<EOF
+          aws_region = "${AWS_REGION}"
+          environment_name = "${ENVIRONMENT_NAME:-dev}"
+          project_name = "${APP_SLUG}"
+          database_name = "${DATABASE_NAME}"
+          tf_lock_table_name = "${TF_LOCK_TABLE_NAME}"
+          clerk_jwks_url = "${CLERK_JWKS_URL}"
+          clerk_issuer = "${CLERK_ISSUER:-}"
+          clerk_audience = "${CLERK_AUDIENCE:-}"
+          clerk_publishable_key = "${CLERK_PUBLISHABLE_KEY}"
+          clerk_secret_key_arn = "${CLERK_SECRET_KEY_ARN}"
+          rds_database_url_arn = "${RDS_DATABASE_URL_ARN}"
+          cors_origins = "${CORS_ORIGINS:-}"
+          EOF
+
+      - name: Terraform init
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=${TF_STATE_KEY:-dev/terraform.tfstate}" \
+            -backend-config="dynamodb_table=${TF_LOCK_TABLE_NAME}"
+
+      - name: Terraform validate
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: terraform validate
+
+      - name: Bootstrap database
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: terraform apply -target=module.database -target=module.networking -input=false -auto-approve
+
+      - name: Sync DATABASE_URL secret from RDS
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: |
+          db_instance_id="${APP_SLUG}-${ENVIRONMENT_NAME}-db"
+          master_secret_arn=$(aws rds describe-db-instances \
+            --db-instance-identifier "${db_instance_id}" \
+            --query 'DBInstances[0].MasterUserSecret.SecretArn' \
+            --output text)
+          db_endpoint=$(aws rds describe-db-instances \
+            --db-instance-identifier "${db_instance_id}" \
+            --query 'DBInstances[0].Endpoint.Address' \
+            --output text)
+          db_name=$(aws rds describe-db-instances \
+            --db-instance-identifier "${db_instance_id}" \
+            --query 'DBInstances[0].DBName' \
+            --output text)
+          db_username=$(aws secretsmanager get-secret-value \
+            --secret-id "${master_secret_arn}" \
+            --query 'SecretString' \
+            --output text \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["username"])')
+          db_password=$(aws secretsmanager get-secret-value \
+            --secret-id "${master_secret_arn}" \
+            --query 'SecretString' \
+            --output text \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["password"])')
+          encoded_password=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "${db_password}")
+          database_url="postgresql+psycopg://${db_username}:${encoded_password}@${db_endpoint}:5432/${db_name}?sslmode=require"
+
+          aws secretsmanager update-secret \
+            --secret-id "${RDS_DATABASE_URL_ARN}" \
+            --secret-string "${database_url}" >/dev/null
+          echo "DATABASE_URL secret synced from live RDS instance"
+
+      - name: Bootstrap ECR repository
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: terraform apply -target=module.backend_ecr -input=false -auto-approve
+
+      - name: Push bootstrap image to ECR
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: |
+          ECR_URL=$(aws ecr describe-repositories \
+            --repository-names "${APP_SLUG}-${ENVIRONMENT_NAME}-api" \
+            --query "repositories[0].repositoryUri" --output text)
+          echo "ECR URL: ${ECR_URL}"
+
+          # Login to ECR (login endpoint is the registry root, not the repo URL)
+          ECR_REGISTRY=$(echo "${ECR_URL}" | cut -d'/' -f1)
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+          # Build a minimal bootstrap image that listens on port 8000.
+          # The deploy workflow will replace this with the real application image.
+          printf '%s\n' \
+            'FROM python:3.12-slim' \
+            'EXPOSE 8000' \
+            'CMD ["python", "-m", "http.server", "8000"]' \
+            > /tmp/Dockerfile.bootstrap
+
+          docker build -f /tmp/Dockerfile.bootstrap -t bootstrap-image /tmp
+          docker tag bootstrap-image "${ECR_URL}:latest"
+          docker push "${ECR_URL}:latest"
+          echo "Bootstrap image pushed to ${ECR_URL}:latest"
+
+      - name: Terraform plan
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Terraform apply
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Summarize outputs
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: |
+          cloudfront_domain=$(terraform output -raw cloudfront_domain_name)
+          app_runner_url=$(terraform output -raw app_runner_service_url)
+          echo "## provision-dev" >> "$GITHUB_STEP_SUMMARY"
+          echo "- CloudFront: https://${cloudfront_domain}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- App Runner: https://${app_runner_url}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -z "${CORS_ORIGINS}" ]]; then
+            echo "- Follow-up: set repository variable CORS_ORIGINS=https://${cloudfront_domain} and rerun provision-dev once." >> "$GITHUB_STEP_SUMMARY"
+          fi

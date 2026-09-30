@@ -1,0 +1,169 @@
+This document contains references to Cornerstone
+
+MILESTONE: Deploy Frontend (Cloudflare Pages)
+Date: May 12-14, 2026
+Status: Complete
+
+GOAL
+Public web URL that loads the frontend.
+  - deploy apps/web to Cloudflare Pages
+  - configure build command
+  - configure Clerk publishable key
+  - set API base URL placeholder
+
+IMPLEMENTATION
+
+1. Cloudflare Pages build settings
+   - Build command: `npm run build`
+   - Build output directory: `dist`
+   - Project root: `apps/web`
+
+2. Runtime env vars for Pages
+   - `VITE_CLERK_PUBLISHABLE_KEY`
+   - `VITE_API_BASE_URL`
+   - `VITE_CLERK_PUBLISHABLE_KEY` is required at build time because `src/main.tsx` throws if it is missing.
+   - `VITE_API_BASE_URL` should point to the deployed API URL, or stay as a placeholder until backend deploy is available.
+
+3. SPA routing support
+   - Added `apps/web/public/_redirects`
+   - Rewrite all routes to `index.html` so Cloudflare Pages can serve React Router paths like `/` and `/settings`.
+
+4. Repo configuration update
+   - Added `VITE_API_BASE_URL=http://localhost:8000` to `.env.example` as the default local placeholder.
+
+5. Deployment trigger policy
+   - Environment structure: local (development) → Cloudflare Pages (QA/Staging) → none (no production)
+   - Deploy trigger: auto-deploy on push/merge to main branch
+   - This also covers PR merges in the future (when team expands)
+   - Rollback: redeploy a prior successful build from Cloudflare Pages UI
+
+DEPLOYMENT RESULT
+
+- Cloudflare Pages project deployed successfully from `apps/web`
+- Final Pages configuration validated in production preview:
+   - Build command: `npm run build`
+   - Build output directory: `dist`
+   - Root directory: `apps/web`
+- SPA routing served the React application correctly after Pages configuration was corrected and deployment was revalidated
+- Frontend shell, Clerk auth handoff, and protected homepage loaded successfully from the deployed Pages URL
+
+CHECKPOINT STATUS
+
+- Frontend deployment is complete and was validated end-to-end against the deployed Railway backend.
+- Build-time env vars were successfully applied in Cloudflare Pages.
+- Current auto-deploy-from-main policy works technically but is provisional for template usage; future work may replace it with an acceptance-test deployment plus teardown workflow.
+
+================================================================================
+
+MILESTONE: Deploy Backend + Database (Railway)
+Date: May 13-14, 2026
+Status: Complete
+
+GOAL
+Public API + hosted Postgres with working migrations.
+  - deploy apps/api to Railway with correct Python version
+  - provision Railway PostgreSQL
+  - execute Alembic migrations to create schema
+  - verify API health endpoints
+  - provide database connection string for external tools
+
+IMPLEMENTATION
+
+1. Railway Backend Service Setup
+   - Root directory: `apps/api` (no leading slash; monorepo-aware path)
+   - Build command: `pip install -e .`
+   - Start command: `python -m pip install -e . && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+   - Python version: pinned to 3.12 via `apps/api/.python-version` file
+   - Reasoning: Startup reinstall of pip packages ensures symlink between build/runtime layers correctly resolved
+
+2. Issue Resolution: Path Depth IndexError (2026-05-13)
+   - Problem: app/core/config.py assumed fixed parent depth (parents[4]) for repo root detection; failed on Railway with IndexError
+   - Solution: Replaced hardcoded indexing with depth-agnostic repo root discovery (.git or docker-compose.yml file check)
+   - File: apps/api/app/core/config.py (lines 12-19)
+   - Impact: config.py now handles any deployment directory structure
+
+3. Railway PostgreSQL Database
+   - Database name: railway
+   - Status: Online
+   - Public connection (for external tools like TableHub):
+     postgresql://postgres:lLTaTswRrjyimPGqfUkLnBLxSjqSALCU@yamabiko.proxy.rlwy.net:13716/railway
+   - Internal connection (for API runtime):
+     postgresql+psycopg://postgres:lLTaTswRrjyimPGqfUkLnBLxSjqSALCU@postgres.railway.internal:5432/railway
+   - Volume: postgres-volume (persistent storage)
+
+4. Database Migration (Alembic)
+   - Migration tool: Alembic 1.14.0+
+   - Schema revision: 20260508_0001 (initial persistence schema)
+   - Tables created: users, workspaces, workspace_members
+   - Method: CLI execution via Railway public DB endpoint (internal endpoints not accessible from local machine)
+   - Command:
+     PUBLIC_DB_URL=$(railway variable list --service Postgres --json | python -c "import sys,json; d=json.load(sys.stdin); print(d['DATABASE_PUBLIC_URL'])")
+     DB_URL_SQLA=${PUBLIC_DB_URL/postgresql:\/\//postgresql+psycopg://}
+     railway run --no-local --service cornerstone -- env DATABASE_URL="$DB_URL_SQLA" alembic upgrade head
+
+5. Environment Variables (Railway)
+   - DATABASE_URL (internal, for API runtime)
+   - CLERK_JWKS_URL (required for JWT verification)
+   - CLERK_SECRET_KEY (required for profile enrichment)
+   - CLERK_ISSUER (optional, strict issuer validation)
+   - CLERK_AUDIENCE (optional, strict audience validation)
+   - CORS_ORIGINS (configured for local + Cloudflare Pages domains)
+
+6. Deployment Trigger Policy
+   - Environment structure: local (development) → Railway production → none (no staging)
+   - Deploy trigger: auto-deploy on push/merge to main branch (same as frontend)
+   - Rollback: Railway deployment history allows manual revert to prior successful build
+
+VALIDATION CHECKPOINTS
+
+✓ Backend API is ACTIVE (Online) on Railway
+✓ PostgreSQL database is Online
+✓ Migration 20260508_0001 applied successfully (verified via `alembic current`)
+✓ Python version pinned to 3.12 (matches local environment)
+✓ Database schema created with users, workspaces, workspace_members tables
+
+ADDITIONAL VALIDATION
+
+- Public frontend successfully called deployed backend from Cloudflare Pages
+- Authenticated `GET /api/me` flow succeeded from deployed frontend to deployed backend
+- CORS issue was traced to Railway `CORS_ORIGINS` overriding code defaults with an outdated Pages URL
+- Backend was hardened to support wildcard CORS origins such as `https://*.your-project.pages.dev`
+- Railway CORS configuration was updated to use a wildcard Pages domain pattern for future preview deploys
+
+OPERATIONS NOTE
+
+- This deployment validated the architecture and integration, but the current always-on Railway/Pages model is not the intended long-term template workflow.
+- A future milestone is expected to revisit deployment around ephemeral acceptance environments and teardown.
+
+================================================================================
+
+MILESTONE: CI Optimization (Path Filtering)
+Date: May 13, 2026
+Status: Complete
+
+GOAL
+Reduce CI noise by only running relevant checks for changed files.
+
+IMPLEMENTATION
+
+1. Path-aware CI job filtering
+   - Added `detect-changes` job using `dorny/paths-filter@v1`
+   - Filters for `apps/web/**` changes → triggers `web-checks` only
+   - Filters for `apps/api/**` changes → triggers `api-checks` only
+   - CI workflow file changes (`*.yml`) trigger both checks
+   - Always run both checks on pull requests (safe default)
+
+2. Behavior
+   - Documentation-only changes: no CI jobs run
+   - Frontend-only changes: `web-checks` runs (lint, typecheck, build)
+   - Backend-only changes: `api-checks` runs (lint, tests)
+   - Mixed or workflow changes: both jobs run
+
+3. Benefits
+   - Faster feedback for single-app changes
+   - Reduced CI resource usage for documentation/config updates
+   - Monorepo-aware without needing to change how we structure code
+
+VALIDATION
+
+This milestone is tested by pushing documentation changes only; CI should skip both checks.

@@ -1,0 +1,368 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: teardown-dev
+
+'on':
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Teardown mode
+        required: true
+        default: pause
+        type: choice
+        options:
+          - pause
+          - destroy
+      aws_region:
+        description: AWS deployment region
+        required: true
+        default: us-east-2
+        type: string
+      tf_state_bucket:
+        description: Terraform state bucket name
+        required: true
+        type: string
+      tf_state_key:
+        description: Terraform state object key
+        required: true
+        default: dev/terraform.tfstate
+        type: string
+      environment_name:
+        description: Terraform environment name
+        required: true
+        default: dev
+        type: string
+      app_slug:
+        description: Application slug used for resource naming
+        required: true
+        default: cornerstone
+        type: string
+      tf_lock_table_name:
+        description: Terraform state lock DynamoDB table
+        required: true
+        default: cornerstone-tf-lock
+        type: string
+      confirm_destroy:
+        description: Required only for destroy mode. Enter DESTROY
+        required: false
+        default: ""
+        type: string
+      keep_ecr_repository:
+        description: In destroy mode, keep ECR repository by removing it from Terraform state first
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: teardown-dev
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  APP_SLUG: ${{ inputs.app_slug }}
+  AWS_REGION: ${{ inputs.aws_region }}
+  TF_STATE_BUCKET: ${{ inputs.tf_state_bucket }}
+  TF_STATE_KEY: ${{ inputs.tf_state_key }}
+  TF_LOCK_TABLE_NAME: ${{ inputs.tf_lock_table_name }}
+  ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+  MODE: ${{ inputs.mode }}
+  CONFIRM_DESTROY: ${{ inputs.confirm_destroy }}
+  KEEP_ECR_REPOSITORY: ${{ inputs.keep_ecr_repository }}
+
+jobs:
+  teardown:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate workflow inputs
+        run: |
+          missing=0
+
+          for name in AWS_REGION TF_STATE_BUCKET TF_STATE_KEY TF_LOCK_TABLE_NAME APP_SLUG ENVIRONMENT_NAME MODE KEEP_ECR_REPOSITORY; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required workflow input: $name" >&2
+              missing=1
+            fi
+          done
+
+          if [[ -z "${{ secrets.AWS_ROLE_ARN }}" ]]; then
+            echo "Missing required repository secret: AWS_ROLE_ARN" >&2
+            missing=1
+          fi
+
+          if [[ "$MODE" == "destroy" && "$CONFIRM_DESTROY" != "DESTROY" ]]; then
+            echo "Destroy mode requires confirm_destroy=DESTROY" >&2
+            missing=1
+          fi
+
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Terraform init
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=${TF_STATE_KEY}" \
+            -backend-config="dynamodb_table=${TF_LOCK_TABLE_NAME}"
+
+      - name: Resolve deployment targets
+        if: ${{ inputs.mode == 'pause' }}
+        id: infra
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: |
+          echo "app_runner_service_arn=$(terraform output -raw app_runner_service_arn)" >> "$GITHUB_OUTPUT"
+          echo "app_runner_service_url=$(terraform output -raw app_runner_service_url)" >> "$GITHUB_OUTPUT"
+          echo "s3_bucket_name=$(terraform output -raw s3_bucket_name)" >> "$GITHUB_OUTPUT"
+          echo "cloudfront_distribution_id=$(terraform output -raw cloudfront_distribution_id)" >> "$GITHUB_OUTPUT"
+          echo "cloudfront_domain_name=$(terraform output -raw cloudfront_domain_name)" >> "$GITHUB_OUTPUT"
+          echo "rds_endpoint=$(terraform output -raw rds_endpoint)" >> "$GITHUB_OUTPUT"
+
+      - name: Pause App Runner service
+        if: ${{ inputs.mode == 'pause' }}
+        run: |
+          operation_id=$(aws apprunner pause-service \
+            --service-arn "${{ steps.infra.outputs.app_runner_service_arn }}" \
+            --query 'OperationId' \
+            --output text)
+
+          for attempt in $(seq 1 60); do
+            status=$(aws apprunner list-operations \
+              --service-arn "${{ steps.infra.outputs.app_runner_service_arn }}" \
+              --query "OperationSummaryList[?Id=='${operation_id}']|[0].Status" \
+              --output text)
+
+            if [[ "$status" == "SUCCEEDED" ]]; then
+              break
+            fi
+
+            if [[ "$status" == "FAILED" || "$status" == "ROLLBACK_FAILED" ]]; then
+              echo "Pause operation failed with status: $status" >&2
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+      - name: Stop RDS instance
+        if: ${{ inputs.mode == 'pause' }}
+        run: |
+          db_identifier=$(aws rds describe-db-instances \
+            --query "DBInstances[?Endpoint.Address=='${{ steps.infra.outputs.rds_endpoint }}']|[0].DBInstanceIdentifier" \
+            --output text)
+
+          if [[ -z "$db_identifier" || "$db_identifier" == "None" ]]; then
+            echo "Could not resolve DB instance identifier from endpoint; skipping stop." >&2
+            exit 0
+          fi
+
+          db_status=$(aws rds describe-db-instances \
+            --db-instance-identifier "$db_identifier" \
+            --query 'DBInstances[0].DBInstanceStatus' \
+            --output text)
+
+          if [[ "$db_status" == "available" ]]; then
+            aws rds stop-db-instance --db-instance-identifier "$db_identifier" >/dev/null
+          else
+            echo "RDS status is '$db_status'; skipping stop action."
+          fi
+
+      - name: Empty frontend S3 bucket
+        if: ${{ inputs.mode == 'pause' }}
+        run: |
+          aws s3 rm "s3://${{ steps.infra.outputs.s3_bucket_name }}" --recursive
+
+      - name: Invalidate CloudFront
+        if: ${{ inputs.mode == 'pause' }}
+        run: |
+          invalidation_id=$(aws cloudfront create-invalidation \
+            --distribution-id "${{ steps.infra.outputs.cloudfront_distribution_id }}" \
+            --paths '/*' \
+            --query 'Invalidation.Id' \
+            --output text)
+
+          for attempt in $(seq 1 30); do
+            status=$(aws cloudfront get-invalidation \
+              --distribution-id "${{ steps.infra.outputs.cloudfront_distribution_id }}" \
+              --id "$invalidation_id" \
+              --query 'Invalidation.Status' \
+              --output text)
+            if [[ "$status" == "Completed" ]]; then
+              break
+            fi
+            sleep 10
+          done
+
+      - name: Preserve ECR repository
+        if: ${{ inputs.mode == 'destroy' && inputs.keep_ecr_repository == 'true' }}
+        id: preserve-ecr
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: |
+          echo "ecr_repository_url=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"
+
+          # Remove ECR resources from state so destroy leaves the repository intact.
+          for addr in \
+            module.backend_ecr.aws_ecr_repository.main \
+            module.backend_ecr.aws_ecr_lifecycle_policy.main; do
+            if terraform state list | grep -qx "$addr"; then
+              terraform state rm "$addr"
+            fi
+          done
+
+      - name: Pre-clean destroy targets
+        if: ${{ inputs.mode == 'destroy' }}
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: |
+          name_prefix="${APP_SLUG}-${ENVIRONMENT_NAME}"
+          s3_bucket_name=$(terraform output -raw s3_bucket_name 2>/dev/null || true)
+          ecr_repository_url=$(terraform output -raw ecr_repository_url 2>/dev/null || true)
+          ecr_repository_name=""
+
+          # Fallback to terraform state in partial-destroy scenarios where outputs can be missing.
+          if [[ -z "$s3_bucket_name" ]] && terraform state list | grep -qx 'module.frontend.aws_s3_bucket.main'; then
+            s3_bucket_name=$(terraform state show module.frontend.aws_s3_bucket.main | awk -F' = ' '$1 ~ /^[[:space:]]*bucket$/ {gsub(/"/,"",$2); print $2; exit}')
+          fi
+
+          if [[ -z "$ecr_repository_url" ]] && terraform state list | grep -qx 'module.backend_ecr.aws_ecr_repository.main'; then
+            ecr_repository_name=$(terraform state show module.backend_ecr.aws_ecr_repository.main | awk -F' = ' '$1 ~ /^[[:space:]]*name$/ {gsub(/"/,"",$2); print $2; exit}')
+          fi
+
+          if [[ -z "$ecr_repository_name" && -n "$ecr_repository_url" ]]; then
+            ecr_repository_name="${ecr_repository_url##*/}"
+          fi
+
+          # Final fallback: resolve by deterministic AWS naming convention.
+          if [[ -z "$s3_bucket_name" ]]; then
+            s3_bucket_name=$(aws s3api list-buckets \
+              --query "Buckets[?starts_with(Name, '${name_prefix}-web-')].Name | [0]" \
+              --output text 2>/dev/null || true)
+            if [[ "$s3_bucket_name" == "None" ]]; then
+              s3_bucket_name=""
+            fi
+          fi
+
+          if [[ -z "$ecr_repository_name" ]]; then
+            candidate_repository_name="${name_prefix}-api"
+            if aws ecr describe-repositories --repository-names "$candidate_repository_name" >/dev/null 2>&1; then
+              ecr_repository_name="$candidate_repository_name"
+            fi
+          fi
+
+          echo "Resolved pre-clean targets:"
+          echo "  s3_bucket_name=${s3_bucket_name:-<none>}"
+          echo "  ecr_repository_name=${ecr_repository_name:-<none>}"
+
+          if [[ -n "$s3_bucket_name" ]]; then
+            echo "Pre-cleaning S3 bucket before destroy: $s3_bucket_name"
+
+            # Remove current object keys first.
+            aws s3 rm "s3://${s3_bucket_name}" --recursive || true
+
+            # Remove all object versions and delete markers in batches.
+            while true; do
+              delete_payload=$(aws s3api list-object-versions \
+                --bucket "$s3_bucket_name" \
+                --output json \
+                | jq -c '{Objects: ((.Versions // []) + (.DeleteMarkers // []) | map({Key: .Key, VersionId: .VersionId})), Quiet: true}')
+
+              object_count=$(jq '.Objects | length' <<< "$delete_payload")
+              if [[ "$object_count" -eq 0 ]]; then
+                break
+              fi
+
+              aws s3api delete-objects \
+                --bucket "$s3_bucket_name" \
+                --delete "$delete_payload" >/dev/null
+            done
+
+            echo "S3 object cleanup complete for $s3_bucket_name"
+
+            # Abort any in-progress multipart uploads that can block bucket deletion.
+            while true; do
+              uploads_json=$(aws s3api list-multipart-uploads \
+                --bucket "$s3_bucket_name" \
+                --output json \
+                2>/dev/null || echo '{"Uploads": []}')
+
+              upload_count=$(jq '(.Uploads // []) | length' <<< "$uploads_json")
+              if [[ "$upload_count" -eq 0 ]]; then
+                break
+              fi
+
+              jq -r '(.Uploads // [])[] | @base64' <<< "$uploads_json" | while read -r row; do
+                upload=$(echo "$row" | base64 --decode)
+                key=$(jq -r '.Key' <<< "$upload")
+                upload_id=$(jq -r '.UploadId' <<< "$upload")
+                aws s3api abort-multipart-upload --bucket "$s3_bucket_name" --key "$key" --upload-id "$upload_id" >/dev/null
+              done
+            done
+          fi
+
+          if [[ "${KEEP_ECR_REPOSITORY}" != "true" && -n "$ecr_repository_name" ]]; then
+            echo "Pre-cleaning ECR repository before destroy: $ecr_repository_name"
+
+            while true; do
+              image_ids=$(aws ecr list-images \
+                --repository-name "$ecr_repository_name" \
+                --query 'imageIds[0:100]' \
+                --output json \
+                2>/dev/null || echo '[]')
+
+              image_count=$(jq 'length' <<< "$image_ids")
+              if [[ "$image_count" -eq 0 ]]; then
+                break
+              fi
+
+              aws ecr batch-delete-image \
+                --repository-name "$ecr_repository_name" \
+                --image-ids "$image_ids" >/dev/null
+            done
+
+            echo "ECR image cleanup complete for $ecr_repository_name"
+          fi
+
+      - name: Terraform destroy
+        if: ${{ inputs.mode == 'destroy' }}
+        working-directory: infra/providers/aws/terraform/environments/dev
+        run: terraform destroy -input=false -auto-approve
+
+      - name: Summarize pause mode
+        if: ${{ inputs.mode == 'pause' }}
+        run: |
+          echo "## teardown-dev (pause)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- App Runner: pause requested" >> "$GITHUB_STEP_SUMMARY"
+          echo "- RDS: stop requested when instance status was available" >> "$GITHUB_STEP_SUMMARY"
+          echo "- S3: bucket emptied" >> "$GITHUB_STEP_SUMMARY"
+          echo "- CloudFront invalidation: requested" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URLs and Terraform state remain intact" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summarize destroy mode
+        if: ${{ inputs.mode == 'destroy' }}
+        run: |
+          echo "## teardown-dev (destroy)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Terraform destroy completed for the dev environment state" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${KEEP_ECR_REPOSITORY}" == "true" ]]; then
+            echo "- ECR repository preserved: ${{ steps.preserve-ecr.outputs.ecr_repository_url }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Note: a future Terraform apply may require importing preserved ECR resources into state." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "- Bootstrap-managed resources remain outside this workflow (state bucket/lock table and bootstrap secrets)" >> "$GITHUB_STEP_SUMMARY"

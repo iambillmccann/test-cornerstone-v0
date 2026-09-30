@@ -1,0 +1,391 @@
+This document contains references to Cornerstone
+
+Clerk Authentication Development Log
+Date: 2026-05-07
+Repo: fourier-gauss-labs/cornerstone
+Branch: main
+
+Goal
+Add Clerk authentication to the frontend so users can register and log in.
+Protect the entire app shell so unauthenticated users are redirected to sign-in.
+
+Requirements
+- Create Clerk application (manual, in Clerk dashboard)
+- Add Clerk env vars
+- Install Clerk React SDK
+- Wrap app with Clerk provider
+- Add sign-in / sign-up routes and components
+- Protect the app shell
+
+Step 1 - Pre-implementation discovery
+Status: Complete
+Actions:
+- Reviewed existing frontend stack (React 19, TypeScript, Vite, React Router v7, shadcn/ui).
+- Mapped integration points:
+	- apps/web/src/main.tsx — entrypoint for ClerkProvider wrapping
+	- apps/web/src/App.tsx — route tree for adding auth routes and protected layout
+	- apps/web/src/components/layout/Header.tsx — placeholder user button to replace
+	- .env.example — existing env convention reference
+- Confirmed .env.local is already covered by .gitignore.
+- Reviewed existing .env.example: Clerk vars (CLERK_PUBLISHABLE_KEY, CLERK_SECRET_KEY,
+  CLERK_JWKS_URL) were already stubbed for backend use. Added VITE_CLERK_PUBLISHABLE_KEY
+  for frontend Vite visibility.
+- Confirmed scope:
+	- Protect full app shell (/ and /settings)
+	- Use Clerk-hosted React components (no custom auth UI in this pass)
+	- Include beginner-friendly Clerk account setup documentation
+
+Step 1 Summary
+- Integration points identified with no structural blockers.
+- Existing route/layout pattern is well-suited to add a protected layout wrapper
+  and separate public auth routes alongside it.
+
+Step 2 - Clerk account and application setup (manual)
+Status: Complete
+Actions:
+- User created Clerk account at https://dashboard.clerk.com/sign-up.
+- User created Clerk application in dashboard with email/password authentication enabled.
+- User collected keys from Clerk dashboard > API Keys:
+	- Publishable key (pk_test_... — frontend safe)
+	- Secret key (sk_test_... — backend only)
+	- JWKS URL (https://<clerk-domain>/.well-known/jwks.json)
+
+Step 2 Summary
+- Clerk application is live in development instance.
+- All required keys are available for local environment wiring.
+
+Step 3 - Add Clerk env vars
+Status: Complete
+Actions:
+- Added VITE_CLERK_PUBLISHABLE_KEY to .env.example (frontend Vite convention).
+- Created apps/web/.env.local with:
+	- VITE_CLERK_PUBLISHABLE_KEY=<publishable key>
+- Created root .env.local with:
+	- CLERK_SECRET_KEY=<secret key>
+	- CLERK_JWKS_URL=<jwks url>
+	- CLERK_PUBLISHABLE_KEY=<publishable key>
+- Confirmed .env.local files are gitignored (line 11 of root .gitignore).
+
+Step 3 Summary
+- Frontend Vite runtime key and backend server keys are both in place locally.
+- No secrets are committed to source control.
+
+Step 4 - Install Clerk React SDK
+Status: Complete
+Actions:
+- Ran from apps/web (Node 20.19.0 via nvm):
+	- npm install @clerk/clerk-react
+- Added @clerk/clerk-react ^5.61.6 to apps/web/package.json dependencies.
+- Lockfile updated with 8 new packages (Clerk SDK + transitive deps).
+- Ran npm run lint && npm run build — result: clean, zero errors/warnings.
+
+Step 4 Summary
+- Clerk SDK installed and dependency tree stable.
+
+Step 5 - Wrap app with Clerk provider
+Status: Complete
+Actions:
+- Edited apps/web/src/main.tsx:
+	- Imported ClerkProvider from @clerk/clerk-react.
+	- Read publishable key from import.meta.env.VITE_CLERK_PUBLISHABLE_KEY.
+	- Added explicit startup guard: throws Error with clear message if key is missing.
+	- Wrapped <App /> with <ClerkProvider publishableKey={...}>.
+
+Step 5 Summary
+- ClerkProvider is the outermost wrapper after StrictMode, giving all child
+  components access to Clerk auth context.
+- Missing key produces a clear developer-facing error rather than a silent failure.
+
+Step 6 - Add sign-in / sign-up routes and components
+Status: Complete
+Actions:
+- Created apps/web/src/components/pages/SignIn.tsx:
+	- Renders Clerk's <SignIn /> component with path routing.
+	- Centered full-screen layout using existing Tailwind tokens.
+	- forceRedirectUrl="/" after successful sign-in.
+- Created apps/web/src/components/pages/SignUp.tsx:
+	- Renders Clerk's <SignUp /> component with path routing.
+	- Same layout pattern as SignIn page.
+	- forceRedirectUrl="/" after successful sign-up.
+- Edited apps/web/src/App.tsx:
+	- Added public routes /sign-in/* and /sign-up/* outside the protected shell.
+	- Moved catch-all <Navigate to="/" replace /> outside the shell wrapper.
+
+Step 6 Summary
+- Sign-in and sign-up pages are live at /sign-in and /sign-up.
+- Routes use Clerk path routing mode so multi-step flows (email verification etc.)
+  work correctly within the same path prefix.
+
+Step 7 - Protect the app shell
+Status: Complete
+Actions:
+- Created apps/web/src/components/auth/ProtectedLayout.tsx:
+	- Reads isLoaded and isSignedIn from Clerk's useAuth() hook.
+	- Shows a loading state while Clerk session is initializing (prevents auth flicker).
+	- Redirects to /sign-in if user is not authenticated.
+	- Renders the existing <Layout> shell with <Outlet /> when authenticated.
+- Edited apps/web/src/App.tsx:
+	- Replaced <Route element={<Layout />}> with <Route element={<ProtectedLayout />}>.
+	- All existing shell routes (/ and /settings) are now protected.
+- Edited apps/web/src/components/layout/Header.tsx:
+	- Removed placeholder UserCircle2 user button.
+	- Added <SignedOut>: renders a "Sign in" link button pointing to /sign-in.
+	- Added <SignedIn>: renders Clerk's <UserButton> with afterSignOutUrl="/sign-in".
+	- Removed UserCircle2 import; added SignedIn, SignedOut, UserButton from Clerk
+	  and Link from react-router-dom.
+
+Step 7 Summary
+- Full app shell is protected. Unauthenticated users cannot access / or /settings.
+- Header surfaces correct auth state (sign-in action vs. user avatar + sign-out).
+- Mobile and desktop header layout behavior is unchanged.
+
+Step 8 - Final validation
+Status: Complete
+Actions:
+- Ran from apps/web (Node 20.19.0 via nvm):
+	- npm run lint — result: zero errors/warnings
+	- npm run build — result: zero errors/warnings, production bundle built successfully
+		- dist/index.html       0.39 kB
+		- dist/assets/index.css 24.43 kB
+		- dist/assets/index.js  274.90 kB
+
+Step 8 Summary
+- All quality gates pass. Implementation is production-build clean.
+
+Files Changed
+- .env.example — added VITE_CLERK_PUBLISHABLE_KEY stub (committed)
+- apps/web/package.json — added @clerk/clerk-react dependency (committed)
+- apps/web/package-lock.json — lockfile updated (committed)
+- apps/web/src/main.tsx — ClerkProvider wrapping + startup guard (committed)
+- apps/web/src/App.tsx — public auth routes + ProtectedLayout shell (committed)
+- apps/web/src/components/layout/Header.tsx — Clerk-aware auth controls (committed)
+- apps/web/src/components/auth/ProtectedLayout.tsx — new file (committed)
+- apps/web/src/components/pages/SignIn.tsx — new file (committed)
+- apps/web/src/components/pages/SignUp.tsx — new file (committed)
+- docs/setup/authentication.md — new beginner setup guide (committed)
+- docs/setup/local-development.md — link to auth setup guide (committed)
+- apps/web/.env.local — frontend Vite key (gitignored, not committed)
+- .env.local (root) — backend keys and JWKS URL (gitignored, not committed)
+
+Project Summary
+Clerk authentication is fully integrated into the frontend. The app shell is
+protected, sign-in and sign-up flows are live using Clerk-hosted components,
+and the header reflects real auth state. Local environment keys are in place
+and gitignored. All lint and build checks pass. The app is ready for live
+end-to-end testing (sign-up, sign-in, sign-out, protected route verification).
+
+-------------------------------------------------------------------------------
+Date: 2026-06-05
+Topic: Replace Clerk-branded auth surfaces with Cornerstone-native auth pages
+
+Goal
+Keep Clerk as identity/session infrastructure while replacing Clerk prebuilt
+UI components in normal auth/account flows with Cornerstone-styled pages.
+
+Scope for this iteration
+- Keep Clerk provider/session infrastructure in place.
+- Replace SignIn/SignUp prebuilt Clerk components with custom forms.
+- Replace header UserButton with Cornerstone account/sign-out controls.
+- Add protected account route at /settings/account.
+- Keep backend /api/me behavior unchanged for app context.
+- Keep account management lightweight: identity display + sign-out.
+
+Implementation details
+1) Routing and guards
+- Updated frontend route tree:
+	- /sign-in (public custom page)
+	- /sign-up (public custom page)
+	- /, /settings, /settings/account (protected via ProtectedLayout)
+- Retained existing guard behavior in ProtectedLayout:
+	- logged-out users redirected to /sign-in
+	- loading state shown while Clerk initializes
+
+2) Custom sign-in page
+- Replaced Clerk <SignIn /> with a Cornerstone-styled card form.
+- Uses Clerk hooks for auth operations (email/password):
+	- useAuth for session redirect behavior
+	- useSignIn for create + setActive flow
+- Added loading and inline error states.
+- Authenticated users hitting /sign-in are redirected to /.
+
+3) Custom sign-up page
+- Replaced Clerk <SignUp /> with a Cornerstone-styled card form.
+- Uses Clerk hooks for registration operations (email/password):
+	- useAuth for session redirect behavior
+	- useSignUp for create + setActive flow
+- Added loading and inline error states.
+- Authenticated users hitting /sign-up are redirected to /.
+
+4) Account management page
+- Added new protected page at /settings/account.
+- Displays current Clerk identity basics:
+	- primary email
+	- display name/full name (fallbacks applied)
+	- avatar if present
+- Added sign-out action using Clerk signOut API with redirect to /sign-in.
+
+5) App shell integration
+- Replaced header Clerk UserButton with Cornerstone-native controls:
+	- Account button -> /settings/account
+	- Sign out button using Clerk signOut
+- Added Account entry to left navigation.
+- Added account entry link in Settings page.
+
+6) Backend behavior
+- No backend auth verification changes made.
+- /api/me behavior remains unchanged and continues as canonical app context
+	endpoint for lazy provisioning and profile/workspace context.
+
+Validation
+- Frontend lint: pass
+- Frontend build (tsc + vite): pass
+- Note: local Node warning observed from Vite regarding minimum preferred
+	Node version (20.19+), but build completed successfully in this environment.
+
+Files changed in this iteration
+- apps/web/src/App.tsx
+- apps/web/src/components/pages/SignIn.tsx
+- apps/web/src/components/pages/SignUp.tsx
+- apps/web/src/components/pages/Account.tsx (new)
+- apps/web/src/components/layout/Header.tsx
+- apps/web/src/components/layout/Navigation.tsx
+- apps/web/src/components/pages/Settings.tsx
+
+-------------------------------------------------------------------------------
+Date: 2026-06-05
+Topic: Sign-up verification flow + password confirmation fix
+
+Issue observed
+- Custom sign-up returned: "Account creation needs additional verification before activation."
+- Root cause: Clerk tenant requires email verification; custom flow did not handle verification step.
+
+Changes made
+1) Added password confirmation field to sign-up form.
+- New required field: "Confirm password"
+- Client-side validation blocks submit when password and confirmation do not match.
+
+2) Added Clerk email verification continuation in custom sign-up flow.
+- After `signUp.create(...)`, if status is not complete:
+	- calls `signUp.prepareEmailAddressVerification({ strategy: 'email_code' })`
+	- transitions UI to verification-code step
+- Added verification submit handler using:
+	- `signUp.attemptEmailAddressVerification({ code })`
+	- activates session with `setActive(...)` on success
+
+Validation
+- Frontend lint: pass
+- Frontend build (tsc + vite): pass
+
+File updated
+- apps/web/src/components/pages/SignUp.tsx
+
+-------------------------------------------------------------------------------
+Date: 2026-06-05
+Topic: /api/me invalid-or-expired bearer token mitigation
+
+Issue observed
+- After successful auth and email verification, some sessions reached Home and showed:
+	"Invalid or expired bearer token" from `/api/me`.
+
+Analysis
+- Frontend and backend Clerk instance configuration matched (`VITE_CLERK_PUBLISHABLE_KEY`
+	and `CLERK_JWKS_URL` aligned).
+- Backend did not enforce issuer/audience, reducing config mismatch risk.
+- Likely cause: token freshness/timing race during post-auth navigation.
+
+Change made
+- Updated Home profile loader to:
+	1) request a fresh Clerk token with `getToken({ skipCache: true })`
+	2) call `/api/me`
+	3) on 401 bearer-token auth error, refresh token and retry once
+
+Validation
+- Frontend lint: pass
+- Frontend build (tsc + vite): pass
+
+File updated
+- apps/web/src/components/pages/Home.tsx
+
+-------------------------------------------------------------------------------
+Date: 2026-06-05
+Topic: OAuth provider buttons (Google, Apple, Microsoft)
+
+Goal
+- Expose OAuth provider sign-in/sign-up options in Cornerstone-owned auth pages.
+
+Changes made
+1) Added provider buttons to custom Sign In page.
+- Added Google, Apple, and Microsoft actions.
+- Uses Clerk redirect flow (`authenticateWithRedirect`) with app callback route.
+
+2) Added provider buttons to custom Sign Up page.
+- Added the same three providers in the non-verification state.
+- Reuses Clerk redirect flow for social auth.
+
+3) Added Clerk callback page and route.
+- New page wraps `AuthenticateWithRedirectCallback`.
+- New route: `/sso-callback`.
+
+Validation
+- Frontend lint: pass
+- Frontend build (tsc + vite): pass
+
+Files updated
+- apps/web/src/components/pages/SignIn.tsx
+- apps/web/src/components/pages/SignUp.tsx
+- apps/web/src/components/pages/SsoCallback.tsx (new)
+- apps/web/src/App.tsx
+
+-------------------------------------------------------------------------------
+Date: 2026-06-05
+Topic: Recurring bearer-token errors after provider/account transitions
+
+Issue observed
+- `/api/me` intermittently returned `Invalid or expired bearer token` after
+	signing in with one method (Microsoft) and then switching auth method/account.
+
+Mitigation updates
+1) Frontend retry trigger widened.
+- Home page now retries once on any 401 from `/api/me` (not only specific
+	message text matching).
+- Added a short 300ms delay before retry to reduce session propagation races.
+
+2) Backend JWT decode made clock-skew tolerant.
+- Added JWT decode leeway of 60 seconds during Clerk token verification.
+
+3) Backend observability improved.
+- Added warning log with exception class/message when token decode fails,
+	to aid future diagnosis without changing API error shape.
+
+Validation
+- Frontend lint + build: pass
+- Backend targeted endpoint tests: 20 passed
+
+Files updated
+- apps/web/src/components/pages/Home.tsx
+- apps/api/app/auth.py
+
+-------------------------------------------------------------------------------
+Date: 2026-06-05
+Topic: Dark/light mode not respected on public auth pages
+
+Issue observed
+- Sign-in and sign-up pages rendered in light mode regardless of system preference.
+- Protected app shell correctly respected system/saved theme preference.
+
+Root cause
+- `useTheme()` was only called inside `Layout`, which wraps protected routes.
+- Public routes (/sign-in, /sign-up, /sso-callback) rendered outside `Layout`, so
+  `applyTheme()` was never invoked and the `dark` class was never set on <html>.
+
+Fix
+- Added `useTheme()` call to the root `App` component.
+- Theme is now initialized for every route, including public auth pages.
+- `Layout` retains its own call; the hook is idempotent so there is no conflict.
+
+Validation
+- Frontend lint: pass
+- Frontend build (tsc + vite): pass
+
+File updated
+- apps/web/src/App.tsx

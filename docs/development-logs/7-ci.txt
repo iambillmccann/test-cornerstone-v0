@@ -1,0 +1,95 @@
+MILESTONE: Add CI
+Date: May 12, 2026
+Status: Ready for push (local validation complete; GitHub Actions run pending push)
+
+GOAL
+Every push verifies repository quality gates:
+  - web lint/typecheck/build
+  - api lint/test
+  - optional Docker Compose DB test later
+
+IMPLEMENTATION
+
+1) Replaced placeholder CI workflow
+- Updated .github/workflows/ci.yml
+- Previous workflow only verified repository structure.
+- New workflow runs on:
+  - pull_request
+  - push to all branches
+
+2) Added web quality gates in CI
+- Job: web-checks
+- Runtime: Node 20.19.0
+- Steps:
+  - npm ci (apps/web)
+  - npm run lint
+  - npm run typecheck
+  - npm run build
+
+3) Added API quality gates in CI
+- Job: api-checks
+- Runtime: Python 3.12
+- Steps:
+  - pip install -e ".[dev]" (apps/api)
+  - ruff check app tests
+  - pytest
+
+4) Added explicit frontend typecheck script
+- File: apps/web/package.json
+- Added script:
+  - "typecheck": "tsc -b"
+- Purpose: make lint/typecheck/build separate and explicit in CI.
+
+5) Added backend lint tool and config
+- File: apps/api/pyproject.toml
+- Added dev dependency:
+  - ruff>=0.11.11,<1.0.0
+- Added Ruff config:
+  - target-version py311
+  - line-length 88
+  - src: app, tests
+
+6) Added architectural decision record
+- Created docs/decisions/0003-backend.md
+- Captures previously missing backend decisions and this CI baseline decision.
+
+7) Upgraded GitHub Actions major versions
+- Updated actions/checkout to v6.
+- Updated actions/setup-node to v6.
+- Updated actions/setup-python to v6.
+- Purpose: move the workflow onto Node 24-based action majors ahead of Node 20 action runtime deprecation.
+
+LOCAL VALIDATION
+
+Web (apps/web):
+  - npm run lint   -> pass
+  - npm run typecheck   -> pass
+  - npm run build   -> pass
+
+API (apps/api):
+  - pip install -e ".[dev]"   -> pass
+  - ruff check app tests   -> pass
+  - pytest   -> pass (25 tests)
+
+Execution notes:
+  - Local web build initially failed under Node 20.14.0 (minimum is 20.19.0).
+  - Re-ran with Node 20.19.0 and repaired optional native dependency install (`npm i`) for rolldown binding.
+  - Initial Ruff run exposed pre-existing lint issues in app/config.py and app/routes.py; fixed and re-ran successfully.
+
+CHECKPOINT STATUS
+
+- CI workflow definition complete.
+- Local command parity with CI complete.
+- GitHub Actions pass status pending next push.
+
+DECISIONS
+
+1. CI scope includes both web and API checks in separate jobs.
+2. API CI runtime pinned to Python 3.12.
+3. Push trigger expanded to all branches so every push is verified.
+4. Docker Compose database integration test deferred to a future increment.
+
+FURTHER CONSIDERATIONS
+
+1. Add dependency caching improvements if workflow runtime grows.
+2. Add optional third job for docker-compose PostgreSQL integration tests.

@@ -1,0 +1,241 @@
+This document contains references to Cornerstone
+
+
+MILESTONE: Infrastructure as Code Refactor (IaC / AWS / Terraform)
+Date: May 18–20, 2026
+Status: Step 1 Complete (AWS OIDC trust)
+
+GOAL
+Move Cornerstone from platform-pull deployment (Cloudflare/Railway auto-deploy on push) to explicit IaC-driven
+deployments using Terraform-managed AWS infrastructure, starting with AWS as the first cloud provider adapter.
+
+DECISION RATIONALE
+- Cornerstone is a template, not a production product. Deployment must be reproducible, testable, and easy to tear down.
+- Platform-pull deployments (auto-deploy on push) are designed for continuously running SaaS products, not templates.
+- Explicit IaC (Terraform + GitHub Actions) gives Cornerstone operators full visibility and control.
+- Provider-adapter architecture enables future GCP/Azure support without changing application code.
+- Pause/resume capability (App Runner + RDS) allows cost-effective dev environment validation.
+
+ARCHITECTURE HIGHLIGHTS
+- Frontend: S3 + CloudFront (static site, HTTPS, SPA routing)
+- Backend: AWS App Runner (managed container, stable URL, pause/resume)
+- Database: RDS PostgreSQL 16 (t4g.micro, private access from backend only)
+- Networking: VPC with public + private subnets, NAT egress for backend, private RDS
+- Secrets: created by bootstrap script, referenced by ARN in Terraform (no secrets in .tfstate)
+- Deployment: GitHub Actions orchestration; OIDC auth (no long-lived keys)
+- Teardown: two-tier (pause = reversible, destroy = nuke)
+
+INFRASTRUCTURE DECISIONS
+- AWS provider selected as initial adapter
+- python:3.12-slim Docker base image (matches local dev environment)
+- GitHub OIDC authentication (no long-lived AWS keys in GitHub secrets)
+- Secrets Manager created by bootstrap script (not managed by Terraform)
+- No custom domain initially (native App Runner + CloudFront URLs)
+- Remote state backend: S3 + DynamoDB (bootstrap script managed)
+- Private RDS in private subnets; backend accesses via VPC connector
+- NAT Gateway for backend outbound internet (required for Clerk, third-party APIs)
+- Clerk issuer/audience optional but recommended for strict JWT validation
+
+FILES CREATED (May 18, 2026)
+✓ docs/decisions/0004-iaas-refactor.md — formal decision record
+✓ docs/development-logs/9-iaas-refactor.txt — this action log
+
+
+STEP 1: AWS Account + OIDC Trust (Manual, Complete)
+
+- Created OIDC provider for GitHub Actions:
+  aws iam create-open-id-connect-provider --url "https://token.actions.githubusercontent.com" --client-id-list "sts.amazonaws.com" --thumbprint-list "6938fd4d98bab03faadb97b34396831e3780aea1" --profile cornerstone
+- Created trust policy file for GitHub role (see 0004-iaas-refactor.md)
+- Created IAM role github-actions-cornerstone-deploy with trust policy
+- Attached AdministratorAccess policy to role
+- Captured role ARN and added as AWS_ROLE_ARN in GitHub repository secrets
+
+Result: GitHub ↔ AWS trust relationship is established. Ready for bootstrap-state.sh and Terraform provisioning.
+
+STEP 2: Terraform Core Configuration
+✓ infra/providers/aws/terraform/versions.tf — provider versions and requirements
+✓ infra/providers/aws/terraform/environments/dev/backend.tf — S3 remote state config
+✓ infra/providers/aws/terraform/environments/dev/variables.tf — input variables
+✓ infra/providers/aws/terraform/environments/dev/outputs.tf — resource outputs
+✓ infra/providers/aws/terraform/environments/dev/terraform.tfvars.example — tfvars template
+✓ infra/providers/aws/terraform/environments/dev/main.tf — module wiring
+
+STEP 3: Terraform Modules
+✓ infra/providers/aws/terraform/modules/networking/main.tf — VPC, subnets, security groups
+✓ infra/providers/aws/terraform/modules/ecr/main.tf — ECR repository
+✓ infra/providers/aws/terraform/modules/database/main.tf — RDS PostgreSQL
+✓ infra/providers/aws/terraform/modules/backend/main.tf — App Runner service
+✓ infra/providers/aws/terraform/modules/frontend/main.tf — S3 + CloudFront
+✓ infra/providers/aws/terraform/modules/secrets/main.tf — Secrets Manager + SSM Parameter Store
+
+STEP 4: Bootstrap & Docker
+✓ infra/providers/aws/scripts/bootstrap-state.sh — AWS state backend initialization
+✓ apps/api/Dockerfile — multi-stage build (python:3.12-slim)
+✓ apps/api/.dockerignore — Docker build filter
+
+STEP 5: VALIDATION CHECKPOINT — Ready for Review
+
+All infrastructure scaffolding complete. Ready for user validation before proceeding to:
+- Step 6: AWS Services Rationale (documentation) ✓ COMPLETED
+- Step 7-10: GitHub Actions workflows, deployment validation docs
+
+STEP 6: AWS Services Rationale (Documentation) ✓ COMPLETED
+
+✓ Updated docs/decisions/0004-iaas-refactor.md:
+  - Private RDS (not public)
+  - NAT egress for backend outbound
+  - Clerk issuer/audience optional but recommended
+  - Removed "private database" from not-included
+
+✓ Updated docs/development-logs/9-iaas-refactor.txt:
+  - Networking highlights updated
+  - Infrastructure decisions clarified
+
+✓ AWS adapter documentation already reflects private networking approach
+
+Next: Step 7 — Modify CI workflow (.github/workflows/ci.yml)
+
+UPDATE: May 20, 2026 — Documentation + Manual Setup Clarifications
+
+✓ Canonical docs refreshed after manual AWS setup walkthrough:
+  - docs/decisions/0004-iaas-refactor.md
+  - docs/development-logs/9-iaas-refactor.txt
+  - README.md
+
+✓ Clarified operator workflow for AWS environment selection:
+  - Use repo-local shell variables via scripts/aws-env.sh
+  - Avoid global ~/.bashrc changes to prevent cross-project AWS context bleed
+  - Validate with explicit CLI checks (profile + region)
+
+✓ Captured AWS Toolkit behavior note:
+  - Toolkit v4 stores active connection internally and may display multiple enabled regions
+  - Explorer region display does not override explicit CLI profile/region resolution
+
+✓ Step 6 remains complete; documentation now aligned with private networking and manual setup reality
+
+UPDATE: May 22, 2026 — GitHub Actions AWS Workflows
+
+✓ Updated `.github/workflows/ci.yml`
+  - Added Terraform path detection for `infra/**`
+  - Added Terraform fmt and validate checks for infra changes
+
+✓ Created `.github/workflows/provision-dev.yml`
+  - Manual dispatch workflow for Terraform apply in AWS dev
+  - Builds `terraform.auto.tfvars` from workflow-dispatch inputs
+  - Uses OIDC role assumption via `AWS_ROLE_ARN`
+
+✓ Created `.github/workflows/deploy-dev.yml`
+  - Manual dispatch workflow for backend image publish + App Runner deploy
+  - Builds frontend with production `VITE_API_BASE_URL`
+  - Publishes to S3, invalidates CloudFront, and runs smoke tests
+
+Known limitation:
+- Database migrations are not run from GitHub Actions yet because the current RDS instance is private to the VPC and not reachable from a standard GitHub-hosted runner.
+
+Teardown note:
+- AWS resources are not wrapped in a single AWS-native stack.
+- Lifecycle is controlled through Terraform state, resource naming, and tags.
+- Full destroy will therefore be `terraform destroy` plus explicit handling of bootstrap-managed state/secrets resources.
+
+UPDATE: May 23, 2026 — Teardown ECR Preserve Toggle
+
+✓ Added `keep_ecr_repository` input to `teardown-dev.yml` for destroy mode.
+✓ When enabled, workflow removes ECR resources from Terraform state before `terraform destroy` so the repository remains in AWS.
+
+Known caveat:
+- A subsequent Terraform apply may require importing preserved ECR resources back into state.
+
+UPDATE: May 23, 2026 — Workflow Diagnostics Cleanup
+
+✓ Normalized GitHub workflow YAML headers and added explicit schema hints.
+✓ Revalidated CI/provision/deploy workflow files with no syntax errors reported by repo diagnostics.
+
+Operator note:
+- If stale workflow parser errors remain visible in VS Code Problems, reload the window to refresh language-server caches.
+
+UPDATE: May 24, 2026 — Clerk Environment Isolation Reset
+
+✓ Documented environment-isolated Clerk policy:
+  - `cornerstone-local` for local development
+  - `cornerstone-dev` for AWS dev
+
+✓ Added reset/rebuild runbook in docs/operations/cloud-development.md:
+  - local teardown and DB reset
+  - AWS teardown destroy workflow and post-destroy checks
+  - Clerk app reset/recreation
+  - local/cloud Clerk value reconfiguration
+  - local-first then cloud-dev rebuild validation
+
+✓ Updated docs/setup/authentication.md with explicit local/cloud mapping and URL/origin separation guidance.
+
+UPDATE: May 26–27, 2026 — Reprovision and Deploy Hardening
+
+Context:
+- Full dev destroy/reprovision cycle was executed with a new `cornerstone-dev` Clerk configuration.
+- Terraform provision reached App Runner `CREATE_FAILED` after infrastructure creation.
+- Deploy workflow later timed out while waiting for App Runner despite rollback already completing.
+
+Findings:
+- App Runner create failed when ECR repository existed but had no image (`latest` tag missing).
+- Backend startup failed during deploy rollback due to stale `cornerstone-database-url` secret content and missing SSL mode.
+- Smoke test failure at deploy end was caused by missing `access-control-allow-origin` for the CloudFront origin.
+- Deploy wait loop treated `FAILED` and `ROLLBACK_FAILED` as terminal but not `ROLLBACK_SUCCEEDED`, causing false timeout messaging.
+
+Implemented fixes:
+- `provision-dev.yml`
+  - Added early ECR bootstrap and placeholder image push so App Runner can pull an initial image at service creation time.
+  - Added DB bootstrap/sync step that rewrites `RDS_DATABASE_URL_ARN` from the live RDS-managed master secret and endpoint.
+  - Synced URL format to `postgresql+psycopg://...?...sslmode=require` for App Runner runtime compatibility.
+
+- `deploy-dev.yml`
+  - Updated App Runner wait logic to treat `ROLLBACK_SUCCEEDED` as terminal failure state.
+  - Added CORS parameter reconciliation step to ensure current CloudFront origin is present in `/cornerstone-dev/cors_origins` before backend redeploy.
+
+Operational result:
+- App Runner service recovered to `RUNNING` after DB secret correction and redeploy.
+- CORS header verification passed for CloudFront origin.
+- Deploy smoke test path now aligns with real App Runner terminal statuses and current frontend origin behavior.
+
+✓ Updated README.md with top-level warning not to share a single Clerk app across environments.
+
+UPDATE: June 5, 2026 — Cloud Status Script
+
+✓ Added scripts/cloud-status.sh
+  - Accepts a single parameter: aws, azure, or gcp
+  - For aws: sources scripts/aws-env.sh and queries App Runner for services matching the project name prefix
+  - For azure/gcp: prints "Cloud vendor <name> Not yet supported"
+  - Resource name filter derived from GITHUB_REPO in aws-env.sh rather than hardcoded string, so the
+    script works correctly in apps built from the Cornerstone template without modification
+
+UPDATE: June 6, 2026 — Frontend Navigation UX + PWA Baseline
+
+✓ Updated signed-in shell navigation model:
+  - Sidebar now contains primary app navigation only (Home)
+  - Account-related links removed from sidebar to avoid duplication
+  - Header top-right now uses an avatar dropdown menu with:
+    - Settings → /settings
+    - Account → /settings/account
+    - Sign out → Clerk signOut redirect to /sign-in
+
+✓ Added avatar fallback behavior for robust identity display:
+  - Uses Clerk image when available
+  - Falls back to initials
+  - Falls back to generic user icon when no image/name data exists
+
+✓ Improved mobile/tablet ergonomics:
+  - Increased avatar trigger touch target size in header
+
+✓ Implemented Progressive Web App support in apps/web:
+  - Added vite-plugin-pwa configuration in vite.config.ts
+  - Added web app manifest generation and service worker registration
+  - Added app icons under apps/web/public/icons/
+  - Added conservative runtime caching policy:
+    - NetworkOnly for /api and Clerk/auth-related traffic
+    - StaleWhileRevalidate for static assets
+    - NetworkFirst for non-API page navigations
+
+Validation outcome:
+- npm run lint: pass
+- npm run typecheck: pass
+- npm run build: pass
+- PWA build artifacts generated (manifest.webmanifest, sw.js, workbox runtime)
